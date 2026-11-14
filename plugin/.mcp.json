@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gtmkit": {
+      "command": "gtmkit",
+      "args": ["mcp"]
+    }
+  }
+}
