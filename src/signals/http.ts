@@ -2,12 +2,14 @@ import { Data, Effect } from "effect"
 
 /**
  * `retryable`: a network error or a 5xx. A timeout, a 4xx or a bad response is never retryable. `costUsd`: what the
- * provider reported charging for the failed call, when it reported a cost.
+ * provider reported charging for the failed call, when it reported a cost. `status`: the HTTP status of a page fetch
+ * that answered outside 2xx.
  */
 export class ProviderError extends Data.TaggedError("ProviderError")<{
   readonly message: string
   readonly retryable?: boolean
   readonly costUsd?: number
+  readonly status?: number
 }> {}
 
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>

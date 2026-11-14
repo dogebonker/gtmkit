@@ -127,7 +127,12 @@ export const createSignals = (db: Database, given: Providers) => {
       // Only what is sent to the provider: JSON.stringify drops the undefined `keep`.
       createHash("sha256").update(JSON.stringify({ ...(req.params as object), keep: undefined })).digest("hex"),
     ] as const
-    return { ...req, key, estimate: collector.estimate(req.params) }
+    // Every cap check compares this number: anything else would make the comparison false and skip the cap.
+    const estimate: unknown = collector.estimate(req.params)
+    if (typeof estimate !== "number" || !Number.isFinite(estimate) || estimate < 0) {
+      throw new Error(`${collector.kind}: the estimate is not a number >= 0, so the call is refused`)
+    }
+    return { ...req, key, estimate }
   }
 
   const findRow = (key: readonly [string, string, string, string, string]) =>

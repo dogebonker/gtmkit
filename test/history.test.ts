@@ -11,6 +11,8 @@ import { upsertProject } from "../src/projects"
 import { Effect } from "effect"
 import { collectors, createSignals, type Providers } from "../src/signals"
 import type { SearchConsole } from "../src/signals/google"
+import { ProviderError } from "../src/signals/http"
+import { PRICES } from "../src/signals/prices"
 import { fakeDataForSEO, fakeSearchConsole, fakeWeb, type World } from "./fake-provider"
 
 const WEEK1 = "2026-11-09T08:00:00.000Z" // Monday of 2026-W46
@@ -58,6 +60,7 @@ describe("runDue", () => {
     const s = setup()
     const first = await s.signals.runDue()
     expect(first.kinds.map((k) => [k.kind, k.collected, k.failed.length]).sort()).toEqual([
+      ["ai_access", 1, 0],
       ["ai_visibility", 2, 0],
       ["gsc_performance", 1, 0],
       ["page_watch", 1, 0],
@@ -74,7 +77,7 @@ describe("runDue", () => {
     expect(second.kinds).toEqual([])
     expect(s.fake.calls).toHaveLength(5)
     expect(s.gsc.requests).toHaveLength(searchConsoleCalls)
-    expect(s.web.fetched).toHaveLength(1)
+    expect(s.web.fetched).toHaveLength(3) // the watched page, robots.txt and llms.txt
     expect(s.spendRows().filter((r) => r.kind === "adjustment")).toEqual([]) // charges matched the ledger
   })
 
@@ -184,7 +187,7 @@ describe("runDue", () => {
     const db = openDb(":memory:")
     const fakeOpts = { reportCost: false, overcharge: 1 }
     const fake = fakeDataForSEO(fakeOpts)
-    const signals = createSignals(db, { dataforseo: fake.dataforseo })
+    const signals = createSignals(db, { dataforseo: fake.dataforseo, web: fakeWeb({ round: 0 }).web })
     signals.setCap("global", 150)
     signals.setCap("default", 30)
     const project = upsertProject(db, { domain: "example.com", location: "United States", language: "English" })
@@ -209,7 +212,7 @@ describe("runDue", () => {
     process.env.GTMKIT_NOW = WEEK1
     const db = openDb(":memory:")
     const fake = fakeDataForSEO({ overcharge, delayMs: () => 100 })
-    const signals = createSignals(db, { dataforseo: fake.dataforseo })
+    const signals = createSignals(db, { dataforseo: fake.dataforseo, web: fakeWeb({ round: 0 }).web })
     signals.setCap("global", 150)
     signals.setCap("default", 30)
     const project = upsertProject(db, { domain: "example.com", location: "United States", language: "English" })
@@ -223,7 +226,7 @@ describe("runDue", () => {
     process.env.GTMKIT_NOW = WEEK1
     const charged = fake.charges[0]!.usd
     expect(db.query("SELECT actual_usd FROM spend WHERE kind = 'keyword_ideas'").all()).toEqual([{ actual_usd: halts ? charged : null }])
-    expect(db.query("SELECT status FROM snapshots").all()).toEqual([{ status: "failed" }])
+    expect(db.query("SELECT status FROM snapshots WHERE kind = 'keyword_ideas'").all()).toEqual([{ status: "failed" }])
     // Below: no false excess. Above: a real one, which the reading at 08:11 already caught before the cost arrived.
     const scopes = signals.caps().map((c) => c.scope)
     expect(scopes.includes("halt:all")).toBe(halts)
@@ -278,7 +281,10 @@ describe("digest", () => {
     expect(changes("ai_visibility")).toContain("now mentions the brand")
     expect(changes("ai_visibility")).toContain("now cites example.com")
     expect(changes("page_watch")).toContain("Team plan $30")
-    for (const kind of ["gsc_performance", "serp_top30", "ai_visibility", "page_watch"]) {
+    expect(changes("ai_access")).toContain("GPTBot is now allowed")
+    expect(changes("ai_access")).toContain("ClaudeBot is now blocked")
+    expect(changes("ai_access")).toContain("llms.txt appeared")
+    for (const kind of ["gsc_performance", "serp_top30", "ai_visibility", "page_watch", "ai_access"]) {
       expect(body.kinds[kind]!.coverage.collected).toBe(body.kinds[kind]!.coverage.expected)
       const magnitudes = body.kinds[kind]!.changes.map((c) => c.magnitude)
       expect(magnitudes).toEqual([...magnitudes].sort((a, b) => b - a))
@@ -369,7 +375,25 @@ describe("metrics", () => {
     const all = (db: Database) => db.query("SELECT * FROM metrics ORDER BY project_id, kind, subject, key, date").all()
     const original = all(s.db)
     const keys = new Set((original as { key: string }[]).map((m) => m.key))
-    for (const key of ["clicks", "impressions", "position", "position:example.com", "position:rival-one.com", "mentioned", "cited", "changed_chars", "volume", "difficulty"]) {
+    for (const key of [
+      "clicks",
+      "impressions",
+      "position",
+      "position:example.com",
+      "position:rival-one.com",
+      "ai_overview",
+      "ai_overview_cited",
+      "ai_overview_cited:rival-one.com",
+      "mentioned",
+      "cited",
+      "mentioned:rival-one.com",
+      "cited:rival-one.com",
+      "allowed:GPTBot",
+      "llms_txt",
+      "changed_chars",
+      "volume",
+      "difficulty",
+    ]) {
       expect(keys).toContain(key)
     }
 
@@ -547,5 +571,266 @@ describe("site_audit and backlinks_summary", () => {
     expect(audit).toHaveLength(3)
     expect(audit[0]!.summary).toMatch(/^https:\/\/example\.com\/p\/\S+: issues 1 -> 2, new: title_too_long$/)
     expect(audit[0]!.evidence).toHaveLength(2)
+  })
+})
+
+describe("GEO", () => {
+  const PROMPT = profile.prompts[0]!
+  const values = (s: ReturnType<typeof setup>, kind: string, subject: string, key: string) =>
+    s.signals.metrics(s.project.id, kind, { subject, key }).map((m) => m.value)
+
+  test("ai_visibility records mentioned and cited for each competitor next to the project's own", async () => {
+    const s = setup()
+    await s.signals.runDue() // "Try Rival One or a spreadsheet.", sourced from rival-one.com/blog
+    const subject = `chatgpt: ${PROMPT}`
+    expect(Object.fromEntries(s.signals.metrics(s.project.id, "ai_visibility", { subject }).map((m) => [m.key, m.value]))).toEqual({
+      cited: 0,
+      "cited:rival-one.com": 1,
+      mentioned: 0,
+      "mentioned:rival-one.com": 1,
+    })
+  })
+
+  test("a competitor is mentioned when the first label of its domain is a whole word, a hyphen matching a space or nothing", () => {
+    const extract = collectors.get("ai_visibility")!.extract
+    const mentioned = (answer: string) =>
+      extract({ date: "2026-11-09", engine: "chatgpt", prompt: "p", brands: ["Example"], domain: "example.com", competitors: ["rival-one.com"], items: [{ answer, sources: [] }] }, null)
+        .find((m) => m.key === "mentioned:rival-one.com")!.value
+    expect(["Rival One", "rival-one.com", "RivalOne", "try RIVAL-ONE."].map(mentioned)).toEqual([1, 1, 1, 1])
+    expect(["Rivalry one", "rival-ones", "a rival"].map(mentioned)).toEqual([0, 0, 0])
+    // A competitor whose first label is empty is never mentioned.
+    const empty = extract({ date: "2026-11-09", engine: "chatgpt", prompt: "p", brands: [], domain: "example.com", competitors: [".com"], items: [{ answer: "a . com - x", sources: [] }] }, null)
+    expect(empty.find((m) => m.key === "mentioned:.com")!.value).toBe(0)
+  })
+
+  test("diff says when a competitor gains or loses a mention or citation, ranked below the project's own changes", () => {
+    const diff = collectors.get("ai_visibility")!.diff
+    const answer = (text: string, sources: string[]) => ({
+      date: "2026-11-09",
+      engine: "chatgpt",
+      prompt: "best crm",
+      brands: ["Example"],
+      domain: "example.com",
+      competitors: ["rival-one.com"],
+      items: [{ answer: text, sources }],
+    })
+    const summaries = (a: unknown, b: unknown) => diff(a, b).map((c) => c.summary)
+    const magnitudes = (a: unknown, b: unknown) => diff(a, b).map((c) => c.magnitude)
+    expect(summaries(answer("Try a spreadsheet.", []), answer("Try Rival One.", ["https://www.rival-one.com/x"]))).toEqual([
+      'chatgpt now mentions competitor rival-one.com for "best crm"; the brand is still not mentioned',
+      'chatgpt now cites competitor rival-one.com for "best crm"; example.com is still not cited',
+    ])
+    expect(summaries(answer("Rival One or Example.", []), answer("Example.", []))).toEqual([
+      'chatgpt no longer mentions competitor rival-one.com for "best crm"; the brand is still mentioned',
+    ])
+    // The project moved too: both are reported, the competitor's change below the project's own.
+    expect(summaries(answer("Example.", []), answer("Rival One.", []))).toEqual([
+      'chatgpt no longer mentions the brand for "best crm"',
+      'chatgpt now mentions competitor rival-one.com for "best crm"; the brand is no longer mentioned',
+    ])
+    expect(magnitudes(answer("Example.", []), answer("Rival One.", []))).toEqual([1, 0.5])
+  })
+
+  test("the weekly run asks ChatGPT and Perplexity; all four engines are collectable on demand, priced per engine", async () => {
+    const s = setup()
+    await s.signals.runDue()
+    expect(s.signals.query(s.project.id, "ai_visibility").map((x) => x.subject).sort()).toEqual(["chatgpt", "perplexity"].map((e) => `${e}: ${PROMPT}`))
+    for (const engine of ["gemini", "claude"]) {
+      expect((await s.signals.collect(s.project.id, "ai_visibility", { subject: `${engine}: ${PROMPT}` }, false)).status).toBe("collected")
+    }
+    const llm = s.fake.tasks.filter((t) => t.path.endsWith("/llm_responses/live"))
+    const field = (t: (typeof llm)[number], k: string) => t.task[k] ?? null
+    expect(
+      llm.map((t) => [t.path, t.task.model_name, field(t, "web_search"), field(t, "max_output_tokens"), field(t, "use_reasoning")]).sort(),
+    ).toEqual([
+      ["/v3/ai_optimization/chat_gpt/llm_responses/live", "gpt-4.1-mini", true, 2048, null],
+      ["/v3/ai_optimization/claude/llm_responses/live", "claude-haiku-4-5", true, 2048, false],
+      ["/v3/ai_optimization/gemini/llm_responses/live", "gemini-2.5-flash", true, 2048, false],
+      ["/v3/ai_optimization/perplexity/llm_responses/live", "sonar", null, 2048, null],
+    ])
+    const estimates = s.spendRows().filter((r) => r.kind === "ai_visibility").map((r) => r.estimate_usd as number)
+    expect(estimates.sort((a, b) => a - b)).toEqual(
+      [PRICES.llmModelMax.chatgpt, PRICES.llmModelMax.perplexity, PRICES.llmModelMax.gemini, PRICES.llmModelMax.claude]
+        .map((m) => PRICES.llmTask + m)
+        .sort((a, b) => a - b),
+    )
+  })
+
+  test("Gemini's sources are the annotations' direct_url, not the Vertex AI redirect", async () => {
+    const s = setup()
+    const gemini = async () =>
+      expect((await s.signals.collect(s.project.id, "ai_visibility", { subject: `gemini: ${PROMPT}` }, false)).status).toBe("collected")
+    await gemini()
+    s.world.round = 1 // the answer cites example.com
+    process.env.GTMKIT_NOW = WEEK2
+    await gemini()
+    process.env.GTMKIT_NOW = WEEK1
+    expect(values(s, "ai_visibility", `gemini: ${PROMPT}`, "cited")).toEqual([0, 1])
+  })
+
+  test("serp_top30 records AI Overview presence and whether it cites the project and each competitor, without the billed async option", async () => {
+    const s = setup()
+    await twoWeeks(s)
+    process.env.GTMKIT_NOW = WEEK1
+    const kw = "crm for freelancers"
+    expect(values(s, "serp_top30", kw, "ai_overview")).toEqual([0, 1])
+    expect(values(s, "serp_top30", kw, "ai_overview_cited")).toEqual([0, 1]) // in an element's references
+    expect(values(s, "serp_top30", kw, "ai_overview_cited:rival-one.com")).toEqual([0, 1]) // in the item's references
+    for (const t of s.fake.tasks.filter((x) => x.path.includes("/serp/"))) expect(t.task).not.toHaveProperty("load_async_ai_overview")
+
+    // A tracked domain past the 20 stored references still counts as cited, and each stored domain is at most 253 chars.
+    const refs = [...Array.from({ length: 24 }, (_, i) => ({ domain: `ref${i}.com` })), { domain: "www.rival-one.com" }, { domain: `${"x".repeat(5000)}.com` }]
+    const serp = collectors.get("serp_top30")!
+    const overviewOf = async (references: unknown[]) => {
+      const answer = (_path: string, _task: Record<string, unknown>, decode: (r: unknown) => Effect.Effect<unknown, { message: string }>) =>
+        Effect.map(decode([{ items: [{ type: "ai_overview", references, items: null }] }]), (result) => ({ result, costUsd: 0 }))
+      const params = { keyword: kw, location_name: "United States", language_name: "English", depth: 30, keep: { tracked: ["example.com", "rival-one.com"] } }
+      const { payload } = await Effect.runPromise(serp.fetch(params, Object.assign(answer, { balance: () => Effect.succeed(0) }) as never))
+      return { payload, references: (payload as { ai_overview: { references: string[] } }).ai_overview.references }
+    }
+    const cut = await overviewOf(refs)
+    expect(cut.references).toHaveLength(20)
+    expect(Object.fromEntries(serp.extract(cut.payload, null).map((m) => [m.key, m.value]))).toMatchObject({
+      ai_overview: 1,
+      ai_overview_cited: 0,
+      "ai_overview_cited:rival-one.com": 1,
+    })
+    expect((await overviewOf(refs.slice(-1))).references[0]!.length).toBe(253)
+
+    // A payload stored before AI Overview tracking has no ai_overview field: no AI Overview metric, not a 0.
+    const old = { date: "2026-11-02", keyword: kw, tracked: ["example.com"], items: [{ rank: 1, domain: "example.com", url: null, title: null }] }
+    expect(collectors.get("serp_top30")!.extract(old, null).map((m) => m.key)).toEqual(["position:example.com"])
+  })
+
+  test("ai_access reads robots.txt and llms.txt of the project domain: a 404 is data, a blocked bot is 0", async () => {
+    const s = setup()
+    const r = await s.signals.collect(s.project.id, "ai_access", {}, false)
+    expect(r.status).toBe("collected")
+    expect(s.web.fetched).toEqual(["https://example.com/robots.txt", "https://example.com/llms.txt"])
+    expect(Object.fromEntries(s.signals.metrics(s.project.id, "ai_access").map((m) => [m.key, m.value]))).toEqual({
+      "allowed:ChatGPT-User": 1,
+      "allowed:ClaudeBot": 1,
+      "allowed:GPTBot": 0,
+      "allowed:Google-Extended": 1,
+      "allowed:OAI-SearchBot": 1,
+      "allowed:PerplexityBot": 1,
+      llms_txt: 0,
+    })
+    const [snapshot] = s.signals.query(s.project.id, "ai_access")
+    expect(snapshot!.subject).toBe("example.com")
+    expect((snapshot!.payload as { items: { file: string; found: boolean }[] }).items.map((i) => [i.file, i.found])).toEqual([
+      ["robots.txt", true],
+      ["llms.txt", false],
+    ])
+  })
+
+  test("robots.txt rules: the agent's own group, else the * group, longest match for /; a missing file allows every bot", () => {
+    const extract = collectors.get("ai_access")!.extract
+    const allowed = (robots: string | null, llms: string | null = null) =>
+      Object.fromEntries(
+        extract(
+          {
+            date: "2026-11-09",
+            domain: "example.com",
+            items: [
+              { file: "robots.txt", found: robots !== null, body: robots ?? "" },
+              { file: "llms.txt", found: llms !== null, body: llms ?? "" },
+            ],
+          },
+          null,
+        ).map((m) => [m.key.replace("allowed:", ""), m.value]),
+      )
+    expect(allowed(null)).toMatchObject({ GPTBot: 1, ClaudeBot: 1, PerplexityBot: 1, llms_txt: 0 })
+    expect(allowed("User-agent: *\nDisallow: /")).toMatchObject({ GPTBot: 0, "Google-Extended": 0 })
+    expect(allowed("User-agent: *\nDisallow: /\n\nUser-agent: PerplexityBot\nAllow: /")).toMatchObject({ PerplexityBot: 1, GPTBot: 0 })
+    expect(allowed("# bots\nuser-agent: gptbot # case-insensitive\nUser-Agent: ClaudeBot\nDisallow: /\nAllow: /$")).toMatchObject({ GPTBot: 1, ClaudeBot: 1 })
+    expect(allowed("User-agent: OAI-SearchBot\nDisallow: /*\n\nUser-agent: *\nDisallow:")).toMatchObject({ "OAI-SearchBot": 0, GPTBot: 1 })
+    expect(allowed("User-agent: *\nDisallow: /private")).toMatchObject({ GPTBot: 1 })
+    expect(allowed(null, "# Example\n> A CRM")).toMatchObject({ llms_txt: 1 })
+    expect(allowed(null, "<!doctype html><title>Not found</title>")).toMatchObject({ llms_txt: 0 }) // a soft 404
+    // Lines end in \r\n, \r or \n. A user-agent matches by its leading product token.
+    expect(allowed("User-agent: *\rAllow: /\r\rUser-agent: GPTBot\rDisallow: /\r")).toMatchObject({ GPTBot: 0, ClaudeBot: 1 })
+    expect(allowed("User-agent: *\r\nAllow: /\r\n\r\nUser-agent: ClaudeBot\r\nDisallow: /")).toMatchObject({ ClaudeBot: 0, GPTBot: 1 })
+    expect(allowed("User-agent: GPTBot/1.1\nDisallow: /\n\nUser-agent: *\nAllow: /")).toMatchObject({ GPTBot: 0, PerplexityBot: 1 })
+  })
+
+  test("ai_access status rules: robots.txt 401 or 403 allows every bot, 429 or 5xx fails; llms.txt 429 or 5xx is unknown, robots.txt kept", async () => {
+    const answer = (robots: number | string, llms: number | string) => (url: string) =>
+      Effect.suspend(() => {
+        const r = url.endsWith("/robots.txt") ? robots : llms
+        return typeof r === "number"
+          ? Effect.fail(new ProviderError({ message: `page ${url}: HTTP ${r}`, status: r, retryable: r >= 500 }))
+          : Effect.succeed({ url, status: 200, truncated: false, body: r })
+      })
+    const run = async (robots: number | string, llms: number | string) => {
+      const db = openDb(":memory:")
+      const signals = createSignals(db, { dataforseo: null, web: answer(robots, llms) })
+      signals.setCap("global", 150)
+      signals.setCap("default", 30)
+      const project = upsertProject(db, profile)
+      const r = await signals.collect(project.id, "ai_access", {}, false)
+      return { r, metrics: Object.fromEntries(signals.metrics(project.id, "ai_access").map((m) => [m.key, m.value])) }
+    }
+    for (const status of [401, 403]) {
+      const { r, metrics } = await run(status, 404)
+      expect(r.status).toBe("collected")
+      expect(metrics).toMatchObject({ "allowed:GPTBot": 1, "allowed:ClaudeBot": 1, llms_txt: 0 })
+    }
+    for (const status of [429, 500]) expect((await run(status, "# Example")).r.status).toBe("failed")
+    for (const status of [429, 503]) {
+      const { r, metrics } = await run("User-agent: GPTBot\nDisallow: /", status)
+      expect(r.status).toBe("collected")
+      expect(metrics["allowed:GPTBot"]).toBe(0)
+      expect(metrics).not.toHaveProperty("llms_txt") // unknown, not 0
+    }
+  })
+
+  test("ai_access: a 5xx fails the snapshot and is retryable; a huge robots.txt is cut so the payload stays under 200 KB", async () => {
+    const fail = setup()
+    const down = createSignals(fail.db, {
+      dataforseo: null,
+      web: (url) => Effect.fail(new ProviderError({ message: `page ${url}: HTTP 503`, status: 503, retryable: true })),
+    })
+    expect(await down.collect(fail.project.id, "ai_access", {}, false)).toMatchObject({ status: "failed", retryable: true })
+
+    const big = setup()
+    const huge = createSignals(big.db, {
+      dataforseo: null,
+      web: (url) => Effect.succeed({ url, status: 200, truncated: false, body: `User-agent: GPTBot\nDisallow: /\n${"# filler\n".repeat(100_000)}` }),
+    })
+    const r = await huge.collect(big.project.id, "ai_access", {}, false)
+    if (r.status !== "collected") throw new Error(r.status)
+    expect(JSON.stringify(r.snapshot.payload).length).toBeLessThan(200_000)
+    expect(huge.metrics(big.project.id, "ai_access", { key: "allowed:GPTBot" }).map((m) => m.value)).toEqual([0])
+  })
+})
+
+describe("cap check", () => {
+  test("an engine name inherited from Object (constructor: x) is refused before any spend; dry_run returns no estimate", async () => {
+    const s = setup()
+    s.signals.setCap(s.project.id, 0.0001)
+    for (const subject of ["constructor: x", "__proto__: x", "toString: x"]) {
+      expect(await s.signals.collect(s.project.id, "ai_visibility", { subject }, false)).toMatchObject({ status: "refused" })
+      expect(await s.signals.collect(s.project.id, "ai_visibility", { subject }, true)).toMatchObject({ status: "refused" })
+    }
+    expect(s.fake.calls).toEqual([])
+    expect(s.spendRows()).toEqual([])
+  })
+
+  test("a collector whose estimate is not a finite number >= 0 is refused before any spend", async () => {
+    const s = setup()
+    const serp = collectors.get("serp_top30")!
+    const estimate = serp.estimate
+    try {
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, "0.5" as unknown as number]) {
+        serp.estimate = () => bad
+        expect(await s.signals.collect(s.project.id, "serp_top30", { subject: "crm" }, false)).toMatchObject({ status: "refused" })
+        expect(await s.signals.collect(s.project.id, "serp_top30", { subject: "crm" }, true)).toMatchObject({ status: "refused" })
+      }
+    } finally {
+      serp.estimate = estimate
+    }
+    expect(s.fake.calls).toEqual([])
+    expect(s.spendRows()).toEqual([])
   })
 })

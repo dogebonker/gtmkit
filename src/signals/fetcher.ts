@@ -178,7 +178,7 @@ export const createPageFetcher =
           const r = await getOnce(url, signal, blocked)
           if (r.location === undefined) {
             if (r.status < 200 || r.status >= 300) {
-              throw new ProviderError({ message: `page ${url.href}: HTTP ${r.status}`, retryable: r.status >= 500 })
+              throw new ProviderError({ message: `page ${url.href}: HTTP ${r.status}`, retryable: r.status >= 500, status: r.status })
             }
             return { url: url.href, status: r.status, body: r.body, truncated: r.truncated }
           }

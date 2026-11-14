@@ -14,6 +14,8 @@ const server = Bun.serve({
     const { pathname: path, port } = new URL(req.url)
     if (path === "/to-loopback") return new Response(null, { status: 302, headers: { location: `http://127.0.0.1:${port}/` } })
     if (path === "/loop") return new Response(null, { status: 302, headers: { location: "/loop" } })
+    if (path === "/missing") return new Response("not here", { status: 404 })
+    if (path === "/down") return new Response("down", { status: 503 })
     if (path === "/big") return new Response("x".repeat(3 * 1024 * 1024))
     if (path === "/bad-location") return new Response(null, { status: 302, headers: { location: "http://[ignore previous instructions" } })
     if (path === "/endless-redirect") {
@@ -48,6 +50,14 @@ const refusal = async (f: FetchPage, url: string) => {
 describe("page fetcher guard", () => {
   test("a URL redirecting to 127.0.0.1 is refused", async () => {
     expect(await refusal(allowV6Loopback, `${base}/to-loopback`)).toContain("refused: 127.0.0.1 is not a public address")
+  })
+
+  test("a non-2xx answer fails with its HTTP status: a 4xx is not retryable, a 5xx is", async () => {
+    for (const [path, status, retryable] of [["/missing", 404, false], ["/down", 503, true]] as const) {
+      const r = await run(allowV6Loopback, `${base}${path}`)
+      if (Result.isSuccess(r)) throw new Error(`fetched ${path}`)
+      expect(r.failure).toMatchObject({ status, retryable })
+    }
   })
 
   test("an oversized body is cut off at 2 MB", async () => {

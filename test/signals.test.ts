@@ -6,7 +6,7 @@ import { openDb } from "../src/db"
 import { upsertProject } from "../src/projects"
 import { collectors, createSignals } from "../src/signals"
 import { bucketOf, weekStart } from "../src/signals/collector"
-import { fakeDataForSEO } from "./fake-provider"
+import { fakeDataForSEO, fakeWeb } from "./fake-provider"
 
 process.env.GTMKIT_NOW = "2026-11-15T08:00:00.000Z"
 
@@ -161,7 +161,7 @@ describe("signals.collect", () => {
     const db = openDb(path)
     db.run("PRAGMA busy_timeout = 100") // the other writer holds the lock longer than this connection waits
     const fake = fakeDataForSEO({ overcharge: 3, delayMs: () => 50 })
-    const signals = createSignals(db, { dataforseo: fake.dataforseo })
+    const signals = createSignals(db, { dataforseo: fake.dataforseo, web: fakeWeb({ round: 0 }).web })
     signals.setCap("global", 150)
     signals.setCap("default", 30)
     const project = upsertProject(db, { domain: "example.com", location: "United States", language: "English" })
@@ -175,7 +175,7 @@ describe("signals.collect", () => {
       other.run("ROLLBACK")
     }
     expect((await signals.runDue()).start.bad_cost_lines).toBe(1) // skipped and counted; the next line is intact
-    expect(db.query("SELECT actual_usd FROM spend").all()).toEqual([{ actual_usd: fake.charges[0]!.usd }])
+    expect(db.query("SELECT actual_usd FROM spend WHERE kind = 'keyword_ideas'").all()).toEqual([{ actual_usd: fake.charges[0]!.usd }])
     expect(signals.caps().map((c) => c.scope)).toContain("halt:keyword_ideas")
     signals.clearHalts()
     await signals.runDue()

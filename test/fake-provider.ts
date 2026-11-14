@@ -3,6 +3,7 @@ import { verify } from "node:crypto"
 import { Effect } from "effect"
 import { dataForSEO, type Fetch, searchConsole, type GoogleCredentials } from "../src/signals"
 import type { FetchPage } from "../src/signals/fetcher"
+import { ProviderError } from "../src/signals/http"
 
 const ITEMS = 20
 
@@ -21,6 +22,26 @@ const organic = (rank: number, domain: string) => ({
   url: `https://www.${domain}/page`,
   title: `${domain} page`,
 })
+
+// docs.dataforseo.com/v3/serp/google/organic/live/advanced/: the `ai_overview` item.
+const reference = (domain: string) => ({
+  type: "ai_overview_reference",
+  source: domain,
+  domain,
+  url: `https://${domain}/guide`,
+  title: `${domain} guide`,
+  text: "snippet",
+})
+const aiOverview = {
+  type: "ai_overview",
+  rank_group: 1,
+  rank_absolute: 1,
+  position: "left",
+  asynchronous_ai_overview: false,
+  markdown: "A CRM for freelancers keeps contacts and follow-ups in one place.",
+  items: [{ type: "ai_overview_element", title: null, text: "A CRM...", references: [reference("www.example.com")], links: null, images: null }],
+  references: [reference("rival-one.com")],
+}
 
 /** Real-shaped DataForSEO results (docs.dataforseo.com/v3), 20 rows per Labs call. */
 const respond = (path: string, task: Record<string, unknown>, world: World): { result: unknown; items: number } => {
@@ -93,7 +114,8 @@ const respond = (path: string, task: Record<string, unknown>, world: World): { r
     }
   }
   if (path.endsWith("/serp/google/organic/live/advanced")) {
-    // Round 0: rival-one.com 1, example.com 2, fillers. Round 1: newcomer.com enters at 1 and pushes the rest down.
+    // Round 0: rival-one.com 1, example.com 2, fillers. Round 1: newcomer.com enters at 1 and pushes the rest down,
+    // and an AI Overview citing rival-one.com (its own references) and example.com (an element's references) appears.
     const domains = [
       ...(world.round > 0 ? ["newcomer.com"] : []),
       "rival-one.com",
@@ -106,6 +128,7 @@ const respond = (path: string, task: Record<string, unknown>, world: World): { r
         {
           keyword: task.keyword,
           items: [
+            ...(world.round > 0 ? [aiOverview] : []),
             { type: "people_also_ask", rank_group: 1, rank_absolute: 1, domain: null },
             ...domains.map((d, i) => organic(i + 1, d)),
           ],
@@ -115,7 +138,11 @@ const respond = (path: string, task: Record<string, unknown>, world: World): { r
   }
   if (path.endsWith("/llm_responses/live")) {
     const text = world.round > 0 ? `Example is a simple CRM for freelancers.` : `Try Rival One or a spreadsheet.`
-    const annotations = world.round > 0 ? [{ title: "Example", url: "https://www.example.com/pricing" }] : null
+    // Gemini's annotation url is a Vertex AI redirect, its direct_url the source.
+    const annotation = path.includes("/gemini/")
+      ? { title: "Example", url: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc", direct_url: "https://www.example.com/pricing" }
+      : { title: "Example", url: "https://www.example.com/pricing" }
+    const annotations = world.round > 0 ? [annotation] : null
     return {
       items: 1,
       result: [
@@ -204,6 +231,7 @@ export const fakeDataForSEO = (
   const world = opts.world ?? { round: 0 }
   const charges: { path: string; usd: number }[] = []
   const calls: string[] = []
+  const tasks: { path: string; task: Record<string, unknown> }[] = []
   let balanceReads = 0
   const envelope = (cost: number | undefined, result: unknown) => ({
     status_code: 20000,
@@ -224,6 +252,7 @@ export const fakeDataForSEO = (
     const status = opts.httpStatus?.(calls.length, path) ?? 200
     if (status !== 200) return new Response("fake error", { status })
     const [task] = JSON.parse(init.body as string) as Record<string, unknown>[]
+    tasks.push({ path, task: task! })
     const { result, items } = respond(path, task!, world)
     const usd = (opts.chargeUsd ?? price(path, items)) * (opts.overcharge ?? 1)
     charges.push({ path, usd })
@@ -236,6 +265,7 @@ export const fakeDataForSEO = (
     world,
     charges,
     calls,
+    tasks,
     balanceReads: () => balanceReads,
     dataforseo: dataForSEO({ login: "fake", password: "fake" }, fetchFn, opts.timeoutMs),
   }
@@ -299,27 +329,39 @@ const xmlList = (tag: string, locs: string[]) =>
 /**
  * Fake page fetcher: a competitor's pricing page that gains a plan, and the `injected` paragraph, in round 1.
  * example.com's sitemap is an index of two sitemaps holding `world.pages` pages and one page on another site.
+ * example.com's robots.txt blocks GPTBot in round 0 and ClaudeBot in round 1. Its llms.txt is a 404 in round 0.
  */
 export const fakeWeb = (world: World, injected = "") => {
   const fetched: string[] = []
+  const page = (url: string) => {
+    const pages = Array.from({ length: world.pages ?? 3 }, (_, i) => `https://example.com/p/${i}`)
+    const half = Math.ceil(pages.length / 2)
+    const sitemaps: Record<string, string> = {
+      "https://example.com/sitemap.xml": xmlList("sitemapindex", ["https://example.com/sitemap-1.xml", "https://example.com/sitemap-2.xml"]),
+      "https://example.com/sitemap-1.xml": xmlList("urlset", ["https://elsewhere.org/p", ...pages.slice(0, half).map((p) => p.replace("/p/0", "/p/0?a=1&amp;b=2"))]),
+      "https://example.com/sitemap-2.xml": xmlList("urlset", pages.slice(half)),
+    }
+    if (sitemaps[url]) return { url, status: 200, truncated: false, body: sitemaps[url] }
+    if (url === "https://example.com/robots.txt") {
+      const bot = world.round > 0 ? "ClaudeBot" : "GPTBot"
+      return { url, status: 200, truncated: false, body: `User-agent: *\nDisallow: /admin\n\nUser-agent: ${bot}\nDisallow: /\n` }
+    }
+    if (url === "https://example.com/llms.txt") return { url, status: 200, truncated: false, body: "# Example\n\n> A simple CRM for freelancers." }
+    const plans = world.round > 0 ? `<li>Pro $12</li><li>Team plan $30</li></ul><p>${injected}</p><ul>` : "<li>Pro $10</li>"
+    return {
+      url,
+      status: 200,
+      truncated: false,
+      body: `<html><head><title>Pricing</title><script>var x = 1</script></head><body><h1>Pricing</h1><ul>${plans}</ul></body></html>`,
+    }
+  }
   const web: FetchPage = (url) =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
       fetched.push(url)
-      const pages = Array.from({ length: world.pages ?? 3 }, (_, i) => `https://example.com/p/${i}`)
-      const half = Math.ceil(pages.length / 2)
-      const sitemaps: Record<string, string> = {
-        "https://example.com/sitemap.xml": xmlList("sitemapindex", ["https://example.com/sitemap-1.xml", "https://example.com/sitemap-2.xml"]),
-        "https://example.com/sitemap-1.xml": xmlList("urlset", ["https://elsewhere.org/p", ...pages.slice(0, half).map((p) => p.replace("/p/0", "/p/0?a=1&amp;b=2"))]),
-        "https://example.com/sitemap-2.xml": xmlList("urlset", pages.slice(half)),
+      if (url === "https://example.com/llms.txt" && world.round === 0) {
+        return Effect.fail(new ProviderError({ message: `page ${url}: HTTP 404`, status: 404 }))
       }
-      if (sitemaps[url]) return { url, status: 200, truncated: false, body: sitemaps[url] }
-      const plans = world.round > 0 ? `<li>Pro $12</li><li>Team plan $30</li></ul><p>${injected}</p><ul>` : "<li>Pro $10</li>"
-      return {
-        url,
-        status: 200,
-        truncated: false,
-        body: `<html><head><title>Pricing</title><script>var x = 1</script></head><body><h1>Pricing</h1><ul>${plans}</ul></body></html>`,
-      }
+      return Effect.succeed(page(url))
     })
   return { fetched, web }
 }

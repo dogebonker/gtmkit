@@ -7,7 +7,7 @@ import { openDb } from "../src/db"
 import { briefPrompt } from "../src/edge/cli/headless"
 import { upsertProject } from "../src/projects"
 import { createSignals } from "../src/signals"
-import { fakeDataForSEO, fakeSearchConsole } from "./fake-provider"
+import { fakeDataForSEO, fakeSearchConsole, fakeWeb } from "./fake-provider"
 
 const run = (args: string[], home: string, env: Record<string, string> = {}) =>
   Bun.spawnSync([process.execPath, "src/edge/cli/main.ts", ...args], {
@@ -23,7 +23,8 @@ describe("tick, status and schedule", () => {
     signals.setCap("global", 150)
     signals.setCap("default", 30)
     signals.setCap("halt:serp_top30", 0.01)
-    const project = upsertProject(db, { domain: "example.com", location: "United States", language: "English", urls: ["http://10.0.0.1/"] }) // refused by the fetcher guard: no network
+    // The domain (ai_access) and the URL (page_watch) are refused by the fetcher guard: no network.
+    const project = upsertProject(db, { domain: "10.0.0.1", location: "United States", language: "English", urls: ["http://10.0.0.1/"] })
     const env = { GTMKIT_NOW: "2026-11-15T08:00:00.000Z" }
 
     expect(run(["status"], home, env).stdout.toString()).toContain("last tick: never")
@@ -62,7 +63,7 @@ describe("weekly brief", () => {
     const home = mkdtempSync(join(tmpdir(), "gtmkit-"))
     const db = openDb(join(home, "gtmkit.db"))
     const world = { round: 0 }
-    const signals = createSignals(db, { dataforseo: fakeDataForSEO({ world }).dataforseo, gsc: fakeSearchConsole(world).gsc })
+    const signals = createSignals(db, { dataforseo: fakeDataForSEO({ world }).dataforseo, gsc: fakeSearchConsole(world).gsc, web: fakeWeb(world).web })
     signals.setCap("global", 150)
     signals.setCap("default", 30)
     const profile = { location: "United States", language: "English", keywords: [{ value: "simple crm" }] }

@@ -63,19 +63,22 @@ No MCP tool can change a cap. A project without its own cap uses the default cap
 | `competitor_keywords` | competitor domain | 30 days | `ranked_keywords` |
 | `keyword_gap` | competitor domain | 30 days | `gap_keywords` |
 | `gsc_performance` | project domain: the 7 days ending 3 days before the run, top 1,000 queries | weekly, free | `clicks`, `impressions`, `position` per query and in total |
-| `serp_top30` | tracked keyword | weekly | `position:<domain>` for the project and each competitor in the top 30 |
-| `ai_visibility` | `<engine>: <prompt>` for each tracked prompt, engines `chatgpt` and `perplexity` | weekly | `mentioned`, `cited` (0 or 1) |
+| `serp_top30` | tracked keyword | weekly | `position:<domain>` for the project and each competitor in the top 30; `ai_overview` (0 or 1), `ai_overview_cited` and `ai_overview_cited:<competitor>` (0 or 1: the domain is among the AI Overview's references) |
+| `ai_visibility` | `<engine>: <prompt>` for each tracked prompt, engines `chatgpt` and `perplexity`; `gemini` and `claude` on demand only (name the engine in the subject) until their cost is measured | weekly | `mentioned`, `cited`, `mentioned:<competitor>`, `cited:<competitor>` (0 or 1) |
+| `ai_access` | project domain: `/robots.txt` and `/llms.txt` through the page fetcher | weekly, free | `allowed:<bot>` (0 or 1: may the bot fetch the root path `/`) for GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, PerplexityBot and Google-Extended, `llms_txt` (0 or 1, none when llms.txt answered 429 or 5xx) |
+
+`ai_access` treats a robots.txt that answers 401 or 403 as no restrictions (RFC 9309), so a firewall that blocks the fetcher reads as "allowed". A robots.txt answering 429 or 5xx fails the snapshot.
 | `page_watch` | watched URL, text up to 200 KB | weekly, free | `changed_chars` |
 | `backlinks_summary` | domain: the project's (the default) or a competitor's (Backlinks `summary` live) | 30 days | `referring_domains`, `backlinks` |
 | `site_audit` | page URL of the project's site (On-Page Instant Pages live), on demand only | 7 days | `issues`: the page's failed on-page checks |
 
 `signals_collect` for `site_audit` with no subject reads `https://<domain>/sitemap.xml` (following a sitemap index, at most 10 files) through the page fetcher, keeps the first 100 pages of the project's domain, and collects each one not audited in the last 7 days as its own snapshot. The whole set is refused when its estimate does not fit the caps.
 
-Pages are fetched over http or https only, with each of at most 5 redirects re-checked, a 15 s timeout and a 2 MB cap. Loopback, private, link-local, carrier-grade NAT, IPv4-mapped and the IPv6 equivalents are refused, and the socket connects only to the address that was checked. Page fetches refuse to run while `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` (either case) is set: Bun would send them through the proxy, which connects to an address nobody checked. Unset those for `gtmkit` to use `page_watch` and `site_audit`.
+Pages are fetched over http or https only, with each of at most 5 redirects re-checked, a 15 s timeout and a 2 MB cap. Loopback, private, link-local, carrier-grade NAT, IPv4-mapped and the IPv6 equivalents are refused, and the socket connects only to the address that was checked. Page fetches refuse to run while `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` (either case) is set: Bun would send them through the proxy, which connects to an address nobody checked. Unset those for `gtmkit` to use `page_watch`, `ai_access` and `site_audit`.
 
 ## Plugin skills
 
-`/gtmkit:gtm-onboard`, `/gtmkit:gtm-keywords`, `/gtmkit:gtm-competitors` (ranked keywords, keyword gap and backlinks), `/gtmkit:gtm-audit [url ...]` (on-page audit of up to 100 sitemap pages), `/gtmkit:gtm-brief` (the weekly brief `tick` also runs), `/gtmkit:gtm-content-brief <keyword>`.
+`/gtmkit:gtm-onboard`, `/gtmkit:gtm-keywords`, `/gtmkit:gtm-competitors` (ranked keywords, keyword gap and backlinks), `/gtmkit:gtm-audit [url ...]` (on-page audit of up to 100 sitemap pages), `/gtmkit:gtm-brief` (the weekly brief `tick` also runs), `/gtmkit:gtm-content-brief <keyword>`, `/gtmkit:gtm-geo` (AI crawler access, AI answers and AI Overviews, with proposed actions).
 
 ## Cloud
 
@@ -103,7 +106,7 @@ The image holds no secret and the database holds no credential. Do not run `gtmk
 - **TLS and Host.** The process speaks plain HTTP. TLS is terminated by the platform's proxy: expose only the proxy's `https://` address. The `Secure` cookie is not sent back over plain `http://` except to localhost. The Host header is not checked in public mode, since every route except `/health` needs the token or the cookie. Local `gtmkit serve` keeps its loopback bind and Host check.
 - **Schedule.** The server calls `runDue()` at start and then 24 hours after each run ends, so runs never overlap and a failed run is logged and retried the next day. It never writes a brief: no model runs in the container. Ask your agent for `gtm-brief` each week.
 - **All nine MCP tools** are served. Caps still cannot be set over MCP: run `docker exec -it <container> gtmkit budget` (or `--project <id>`, `--clear-halt`). It refuses without a terminal, so `docker exec` without `-it` is refused too.
-- **Playbooks as MCP prompts.** The server serves the six playbooks from `plugin/skills` as prompts, so no plugin is needed. Each takes one optional `arguments` string, which replaces `$ARGUMENTS`.
+- **Playbooks as MCP prompts.** The server serves the seven playbooks from `plugin/skills` as prompts, so no plugin is needed. Each takes one optional `arguments` string, which replaces `$ARGUMENTS`.
 
 Connect Claude Code (name the server `gtmkit`, so the prompts appear as `/gtmkit:gtm-onboard (MCP)` and so on):
 

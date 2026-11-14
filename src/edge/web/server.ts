@@ -157,7 +157,7 @@ ${trends(signals.metrics(p.id, "serp_top30", { key: `position:${domain}` }), () 
 <h2>Search Console, whole site</h2>
 ${trends(signals.metrics(p.id, "gsc_performance", { subject: GSC_TOTAL }), (key) => key === "position")}
 <h2>AI visibility</h2>
-<p class="muted">1 when the answer mentions the brand or cites the site.</p>
+<p class="muted">1 when the answer mentions the brand (mentioned) or cites the site (cited). mentioned:&lt;domain&gt; and cited:&lt;domain&gt; are the same for a competitor.</p>
 ${trends(signals.metrics(p.id, "ai_visibility"))}
 <h2>Backlinks</h2>
 ${trends(signals.metrics(p.id, "backlinks_summary"))}

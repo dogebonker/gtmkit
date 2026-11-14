@@ -75,7 +75,7 @@ Non-functional (A marks a written assumption, not an owner answer):
 | SERP money, 100 keywords, depth 30, weekly, live | 100 x $0.006 x 4.33 = $2.60 per project per month | $30 project cap | Fine |
 | Same at 200 keywords | $5.20 | $30 project cap | Fine |
 | Same at 200 keywords daily | $36 | $30 project cap | Exceeds. Daily tracking needs the standard queue, see D5 |
-| AI visibility, 30 prompts, 2 engines, weekly, assumed $0.02 per answer | $5.20 | $30 project cap | Fine if S0 confirms the per-answer cost. If it is higher, the default prompt count drops until the kind costs at most $5 per project per month |
+| AI visibility, 30 prompts, 2 engines (ChatGPT, Perplexity), weekly, assumed $0.02 per answer | $5.20 | $30 project cap | Fine if S0 confirms the per-answer cost. If it is higher, the default prompt count drops until the kind costs at most $5 per project per month. Gemini and Claude (assumed ceilings $0.05 and $0.12 per answer) are on demand only and join the weekly run after S0 measures their cost |
 | All scheduled spend at NFR1 maximum | 10 x ($5.20 + $5.20) = $104 per month | $150 global cap | Fits, leaves $46 for on-demand research |
 | Storage | about 160 MB per year for 10 projects | laptop disk | Fine |
 
@@ -125,13 +125,16 @@ A snapshot's subject is the unit of one provider call. A metric's subject is the
 | `competitor_keywords` | competitor domain | 30 days | `ranked_keywords` |
 | `keyword_gap` | competitor domain | 30 days | `gap_keywords` |
 | `gsc_performance` | project domain | weekly | `clicks`, `impressions`, `position` per query (top 1,000 by clicks), and the site total under the metric subject `TOTAL` |
-| `serp_top30` | keyword | weekly | `position:<domain>` for the project and each competitor |
-| `ai_visibility` | prompt and engine | weekly | `mentioned`, `cited` (0 or 1) |
+| `serp_top30` | keyword | weekly | `position:<domain>` for the project and each competitor; `ai_overview`, `ai_overview_cited` and `ai_overview_cited:<competitor>` (0 or 1) |
+| `ai_visibility` | prompt and engine | weekly | `mentioned`, `cited`, `mentioned:<competitor>`, `cited:<competitor>` (0 or 1) |
+| `ai_access` | project domain (robots.txt and llms.txt through the page fetcher, free) | weekly | `allowed:<bot>` (0 or 1: may the bot fetch the root path `/`) for GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, PerplexityBot, Google-Extended, and `llms_txt` (0 or 1) |
 | `page_watch` | URL | weekly | `changed_chars` |
 | `site_audit` | page URL (Instant Pages, up to 100 sitemap URLs) | 7 days | `issues` |
 | `backlinks_summary` | domain | 30 days | `referring_domains`, `backlinks` |
 
-`ai_visibility` buys LLM answers as data from DataForSEO (default engines ChatGPT and Perplexity). "Mentioned" means a brand name appears as a whole word, case-insensitive. "Cited" means the project domain appears in the answer's sources.
+`ai_visibility` buys LLM answers as data from DataForSEO. The weekly run asks ChatGPT `gpt-4.1-mini` and Perplexity `sonar`. Gemini `gemini-2.5-flash` and Claude `claude-haiku-4-5` are collected on demand only, by naming the engine in the subject, until S0 measures what their answers cost. ChatGPT, Gemini and Claude search the web (`web_search`). Every request sends `max_output_tokens` 2048, and Gemini and Claude `use_reasoning` false: the docs list no other field that bounds cost, no field limits the number of searches, and with web search the output can pass the token cap. "Mentioned" means a brand name appears as a whole word, case-insensitive. "Cited" means the project domain or a subdomain appears in the answer's sources (for Gemini, the annotations' `direct_url`, not the Vertex AI redirect). The same is recorded per competitor domain: competitors have no brand name, so a competitor counts as mentioned when the non-empty first label of its domain appears as a whole word, a hyphen matching a hyphen, a space or nothing. The diff reports a competitor's mention or citation changing at magnitude 0.5, below the project's own changes (1), and says where the project stands in the same line.
+
+`serp_top30` records whether the result holds an `ai_overview` item, which tracked domains it references (from all its references) and up to 20 referenced domains (its own `references` and its elements', each cut at 253 characters). The `load_async_ai_overview` option, $0.002 more per call, is off, so only AI Overviews DataForSEO has cached come back and `ai_overview` 0 can be a miss. `ai_access` reads `/robots.txt` and `/llms.txt` of the domain. A 4xx other than 429 means the file is missing: no robots.txt allows every bot, and per RFC 9309 that includes 401 and 403, so a firewall blocking the fetcher reads as allowed. A 429, 5xx or network error on robots.txt fails the snapshot. The same on llms.txt alone keeps the robots.txt verdicts and records no `llms_txt` (unknown). A bot may fetch the root path `/` by the group naming its product token, else the `*` group, the longest matching rule winning. The verdicts are also stored in the payload metadata, which MCP returns whole, since it cuts each robots.txt body at 2,000 characters.
 
 All DataForSEO collectors use live endpoints. There is no pending-task state.
 
@@ -180,7 +183,7 @@ A wrong price table is caught two ways. If a reported cost is above its estimate
 ### Model use
 
 - The server never calls Claude.
-- Local interactive: Claude Code on the subscription, with the plugin's playbooks (`gtm-onboard`, `gtm-keywords`, `gtm-competitors`, `gtm-brief`, `gtm-content-brief`, `gtm-audit`). `gtm-onboard` writes `.gtmkit.json` with the project id into the repo so later sessions know the project.
+- Local interactive: Claude Code on the subscription, with the plugin's playbooks (`gtm-onboard`, `gtm-keywords`, `gtm-competitors`, `gtm-brief`, `gtm-content-brief`, `gtm-audit`, `gtm-geo`). `gtm-onboard` writes `.gtmkit.json` with the project id into the repo so later sessions know the project.
 - Local unattended: one launchd job runs `gtmkit tick` daily. `tick` calls `runDue()`, then for each project with a brief due runs `claude -p <gtm-brief playbook text> --tools "" --strict-mcp-config --mcp-config <gtmkit mcp --brief-only> --allowedTools "mcp__gtmkit__*" --output-format stream-json --verbose`, with `ANTHROPIC_*` variables removed from its environment and a 15 minute limit, saving the transcript under `~/.gtmkit/logs`. The run has no built-in tools, no other MCP servers, and a server that does not register `signals_collect` or `project_upsert`. The restriction is enforced by what exists, not by what the model is told.
 - `gtmkit status` prints the last tick, coverage, the latest brief per project and the action acceptance rate. `gtmkit brief <project>` prints the latest brief.
 - Cloud: the user's own agent connects to the hosted MCP endpoint. The same playbook files are served as MCP prompts, so a cloud user needs no plugin.
@@ -190,7 +193,7 @@ A wrong price table is caught two ways. If a reported cost is above its estimate
 
 ### Page fetcher
 
-Used by `page_watch` and `site_audit`'s sitemap read, in both modes: http and https only, redirects followed manually with every hop re-checked (at most 5), the resolved address checked at connect time, and loopback, private, link-local, carrier-grade NAT and IPv4-mapped ranges refused, along with benchmarking, documentation, Teredo and local-use NAT64 ranges. The range check is the program's own, because Bun's `net.BlockList` gave wrong answers. Bun sends requests through `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` when set, which would skip the address check, so page fetches refuse while any of them is set.
+Used by `page_watch`, `ai_access` and `site_audit`'s sitemap read, in both modes: http and https only, redirects followed manually with every hop re-checked (at most 5), the resolved address checked at connect time, and loopback, private, link-local, carrier-grade NAT and IPv4-mapped ranges refused, along with benchmarking, documentation, Teredo and local-use NAT64 ranges. The range check is the program's own, because Bun's `net.BlockList` gave wrong answers. Bun sends requests through `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` when set, which would skip the address check, so page fetches refuse while any of them is set.
 
 ### Deployment
 
@@ -285,6 +288,7 @@ Each slice ships something usable alone. S1 to S6 are built and tested against a
 - S4. More signals: `site_audit`, `backlinks_summary`. One collector file each, plus the `gtm-audit` playbook. Proves the first half of AC13.
 - S5. Dashboard. Proves the second half of AC13.
 - S6. Cloud: container, HTTP MCP, token and cookie auth, playbooks as MCP prompts, health check. Proves AC11.
+- S7. GEO: competitor mentions and citations in `ai_visibility`, Gemini and Claude engines (on demand only until S0), AI Overview presence and citations in `serp_top30`, the `ai_access` collector (robots.txt for six AI crawlers, llms.txt), and the `gtm-geo` playbook. Built against the fake provider: the Gemini and Claude request shapes, the `ai_overview` item shape and the per-engine cost ceilings come from DataForSEO's docs only.
 
 ## 12. Open questions
 
