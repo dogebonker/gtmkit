@@ -1,6 +1,6 @@
 # gtmkit
 
-Local keyword, competitor and backlink research and on-page audits for your own projects, plus weekly history (Search Console, top 30 SERP, AI visibility, competitor pages), bought from DataForSEO and Google, stored in one SQLite file, with hard monthly spend caps. Claude Code is the client. The program never calls Claude. Each week a headless Claude run turns the data into a stored brief and evidence-backed actions, and done actions report how their target metric moved. A read-only dashboard on 127.0.0.1 shows trends, briefs and actions. The same program runs in a container for other people, who connect their own agent over HTTP (see [Cloud](#cloud)). Design: [docs/design.md](docs/design.md). This is slice S6, "cloud".
+Local SEO and GEO (generative engine optimization) analytics for your own projects: keyword, competitor and backlink research and on-page audits, plus weekly history (Search Console, top 30 SERP with AI Overviews, visibility in AI answers, AI crawler access, competitor pages), bought from DataForSEO and Google, stored in one SQLite file, with hard monthly spend caps. Claude Code is the client. The program never calls Claude. Each week a headless Claude run turns the data into a stored brief and evidence-backed actions, and done actions report how their target metric moved. A read-only dashboard on 127.0.0.1 shows trends, briefs and actions. The same program runs in a container for other people, who connect their own agent over HTTP (see [Cloud](#cloud)). Design: [docs/design.md](docs/design.md). Notes for coding agents: [AGENTS.md](AGENTS.md).
 
 ## Setup
 
@@ -66,11 +66,11 @@ No MCP tool can change a cap. A project without its own cap uses the default cap
 | `serp_top30` | tracked keyword | weekly | `position:<domain>` for the project and each competitor in the top 30; `ai_overview` (0 or 1), `ai_overview_cited` and `ai_overview_cited:<competitor>` (0 or 1: the domain is among the AI Overview's references) |
 | `ai_visibility` | `<engine>: <prompt>` for each tracked prompt, engines `chatgpt` and `perplexity`; `gemini` and `claude` on demand only (name the engine in the subject) until their cost is measured | weekly | `mentioned`, `cited`, `mentioned:<competitor>`, `cited:<competitor>` (0 or 1) |
 | `ai_access` | project domain: `/robots.txt` and `/llms.txt` through the page fetcher | weekly, free | `allowed:<bot>` (0 or 1: may the bot fetch the root path `/`) for GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, PerplexityBot and Google-Extended, `llms_txt` (0 or 1, none when llms.txt answered 429 or 5xx) |
-
-`ai_access` treats a robots.txt that answers 401 or 403 as no restrictions (RFC 9309), so a firewall that blocks the fetcher reads as "allowed". A robots.txt answering 429 or 5xx fails the snapshot.
 | `page_watch` | watched URL, text up to 200 KB | weekly, free | `changed_chars` |
 | `backlinks_summary` | domain: the project's (the default) or a competitor's (Backlinks `summary` live) | 30 days | `referring_domains`, `backlinks` |
 | `site_audit` | page URL of the project's site (On-Page Instant Pages live), on demand only | 7 days | `issues`: the page's failed on-page checks |
+
+`ai_access` treats a robots.txt that answers 401 or 403 as no restrictions (RFC 9309), so a firewall that blocks the fetcher reads as "allowed". A robots.txt answering 429 or 5xx fails the snapshot.
 
 `signals_collect` for `site_audit` with no subject reads `https://<domain>/sitemap.xml` (following a sitemap index, at most 10 files) through the page fetcher, keeps the first 100 pages of the project's domain, and collects each one not audited in the last 7 days as its own snapshot. The whole set is refused when its estimate does not fit the caps.
 
