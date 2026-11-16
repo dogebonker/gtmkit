@@ -3,7 +3,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { dbHealthy, openDb } from "../../db"
 import { createSignals, type Providers } from "../../signals"
 import { createServer } from "../mcp/server"
-import { dashboard, HEADERS, page } from "../web/server"
+import { dashboard, font, HEADERS, page } from "../web/server"
 
 // `gtmkit serve --public`: MCP over streamable HTTP at /mcp behind a bearer token, the dashboard behind a login form,
 // /health without auth, and a daily runDue() timer, in one process. TLS is terminated by the platform's proxy: this
@@ -45,9 +45,9 @@ const loginForm = (status: number, message = "") =>
   new Response(
     page(
       "Log in - gtmkit",
-      `<h1>gtmkit</h1>${message ? `<p class="warn">${message}</p>` : ""}
-<form method="post" action="/login"><p><label>Token <input type="password" name="token" autocomplete="current-password" required autofocus></label></p>
-<p><button type="submit">Log in</button></p></form>`,
+      `<div class="head"><h1>gtmkit</h1>${message ? `<p class="warn">${message}</p>` : ""}
+<form method="post" action="/login"><label>Token <input type="password" name="token" autocomplete="current-password" required autofocus></label>
+<button type="submit">Log in</button></form></div>`,
     ),
     { status, headers: LOGIN_HEADERS },
   )
@@ -97,6 +97,9 @@ export const servePublic = (opts: {
       })
     }
     if (path === "/login") return loginForm(200)
+    // The self-hosted fonts are public files: the login page needs them before there is a cookie.
+    const file = req.method === "GET" || req.method === "HEAD" ? font(path) : undefined
+    if (file) return file
     const cookie = /(?:^|;\s*)gtmkit_session=([^;]*)/.exec(req.headers.get("cookie") ?? "")?.[1] ?? ""
     if (!same(cookie, session)) return loginForm(401)
     return pages(req)

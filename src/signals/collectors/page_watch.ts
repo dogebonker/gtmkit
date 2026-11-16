@@ -5,6 +5,7 @@ import type { Collector } from "../collector"
 // Fetched through the guarded page fetcher (../fetcher.ts). Free.
 const TEXT_BYTES = 200_000
 const SUMMARY_CHARS = 600
+const LINE_CHARS = 300
 
 interface Params {
   url: string
@@ -49,6 +50,7 @@ const lineDiff = (before: string, after: string) => {
 }
 
 const textOf = (p: Payload) => p.items[0]?.text ?? ""
+const lines = (ls: string[]) => ls.map((l) => l.slice(0, LINE_CHARS))
 
 const collector: Collector<Params, Payload, "web"> = {
   kind: "page_watch",
@@ -89,6 +91,8 @@ const collector: Collector<Params, Payload, "web"> = {
         subject: cur.url,
         summary: `${cur.url}: ${d.changedChars} chars changed, +${d.added.length}/-${d.removed.length} lines. Added: ${sample(d.added)} Removed: ${sample(d.removed)}`,
         magnitude: d.changedChars,
+        added: lines(d.added),
+        removed: lines(d.removed),
       },
     ]
   },

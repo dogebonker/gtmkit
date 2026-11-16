@@ -15,6 +15,9 @@ export interface Change {
   subject: string
   summary: string
   magnitude: number
+  /** page_watch only, always set there: every line added and removed, each cut at 300 characters. Untrusted page text. */
+  added?: string[]
+  removed?: string[]
 }
 
 export interface Providers {

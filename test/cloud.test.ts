@@ -105,6 +105,15 @@ describe("AC11: gtmkit serve --public", () => {
       expect(noCookie.status).toBe(401)
       expect(await noCookie.text()).toContain('<form method="post" action="/login">')
       expect((await fetch(at(`/p/${id}`))).status).toBe(401)
+      // The fonts load on the login page, before there is a cookie.
+      expect(noCookie.headers.get("content-security-policy")).toContain("font-src 'self'")
+      const font = await fetch(at("/fonts/geist.woff2"))
+      expect(font.status).toBe(200)
+      expect(font.headers.get("content-type")).toBe("font/woff2")
+      // Any other path under /fonts is behind the login like every page.
+      const nope = await fetch(at("/fonts/nope.woff2"))
+      expect(nope.status).toBe(401)
+      expect(await nope.text()).toContain('<form method="post" action="/login">')
       const login = (token: string) => fetch(at("/login"), { method: "POST", body: new URLSearchParams({ token }), redirect: "manual" })
       expect((await login("wrong")).status).toBe(401)
       expect((await login("x".repeat(2 * 1024 * 1024))).status).toBe(413) // refused before the body is parsed

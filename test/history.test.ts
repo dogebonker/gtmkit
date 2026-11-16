@@ -367,6 +367,16 @@ describe("coverage and missing data", () => {
 })
 
 describe("metrics", () => {
+  test("a page_watch change lists the added and removed lines next to its summary", () => {
+    const page = (text: string) => ({ date: "2026-11-09", url: "https://rival-one.com/pricing", final_url: "", truncated: false, items: [{ text }] })
+    const [change] = collectors.get("page_watch")!.diff(page("Pro $10\nTeam $25"), page("Pro $10\nTeam $30\nFree trial"))
+    expect(change!.added).toEqual(["Team $30", "Free trial"])
+    expect(change!.removed).toEqual(["Team $25"])
+    expect(change!.summary).toContain('Added: "Team $30 | Free trial" Removed: "Team $25"')
+    const [onlyAdded] = collectors.get("page_watch")!.diff(page("a"), page("a\nb"))
+    expect(onlyAdded!.removed).toEqual([])
+  })
+
   test("AC8: rebuild-metrics on a copy of the database reproduces the metrics table exactly", async () => {
     const dir = mkdtempSync(join(tmpdir(), "gtmkit-ac8-"))
     const s = setup({}, openDb(join(dir, "gtmkit.db")))
